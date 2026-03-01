@@ -1,5 +1,4 @@
-﻿using System.Drawing;
-using System.Drawing.Imaging;
+﻿using SkiaSharp;
 using ScheduleBot.Data;
 using ScheduleBot.Models;
 using Microsoft.EntityFrameworkCore;
@@ -11,17 +10,19 @@ namespace ScheduleBot.Services
     {
         private readonly BotDbContext _context;
 
-        // Внедрение контекста через конструктор - это правильный подход
         public ScheduleImageGenerator(BotDbContext context)
         {
             _context = context ?? throw new ArgumentNullException(nameof(context));
+        }
+
+        public ScheduleImageGenerator() : this(new BotDbContext())
+        {
         }
 
         public async Task<Stream> GenerateScheduleImage(DateTime weekStart)
         {
             try
             {
-                // Явно загружаем данные с отслеживанием (AsNoTracking для производительности)
                 var employees = await _context.Employees
                     .AsNoTracking()
                     .Where(e => e.IsActive)
@@ -34,71 +35,98 @@ namespace ScheduleBot.Services
                     .Include(p => p.Employee)
                     .ToListAsync();
 
-                // Проверка на отсутствие сотрудников
                 if (employees == null || employees.Count == 0)
                 {
                     return CreateSimpleImage("Нет зарегистрированных сотрудников");
                 }
 
-                // Параметры изображения
                 int cellWidth = 120;
                 int cellHeight = 40;
                 int headerHeight = 80;
-                int leftMargin = 220; // Увеличен для длинных имен
+                int leftMargin = 220;
                 int rowCount = employees.Count;
 
                 int width = leftMargin + (7 * cellWidth);
-                int height = headerHeight + (rowCount * cellHeight) + 50; // +50 для легенды
+                int height = headerHeight + (rowCount * cellHeight) + 50;
 
-                using var bitmap = new Bitmap(width, height);
-                using var graphics = Graphics.FromImage(bitmap);
+                using var bitmap = new SKBitmap(width, height);
+                using var canvas = new SKCanvas(bitmap);
 
-                // Настройки графики
-                graphics.Clear(Color.White);
-                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                // Белый фон
+                canvas.Clear(SKColors.White);
 
                 // Заголовок
-                var headerFont = new Font("Arial", 14, FontStyle.Bold);
-                var weekEnd = weekStart.AddDays(6);
-                graphics.DrawString(
-                    $"Расписание на неделю: {weekStart:dd.MM.yyyy} - {weekEnd:dd.MM.yyyy}",
-                    headerFont, Brushes.Black, new PointF(10, 10));
-
-                // Заголовки дней недели
-                string[] dayNames = { "ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС" };
-                var dayFont = new Font("Arial", 10, FontStyle.Bold);
-                var dayFormat = new StringFormat
+                using var headerPaint = new SKPaint
                 {
-                    Alignment = StringAlignment.Center,
-                    LineAlignment = StringAlignment.Center
+                    Color = SKColors.Black,
+                    IsAntialias = true,
+                    TextSize = 14,
+                    Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold)
+                };
+
+                var weekEnd = weekStart.AddDays(6);
+                canvas.DrawText(
+                    $"Расписание на неделю: {weekStart:dd.MM.yyyy} - {weekEnd:dd.MM.yyyy}",
+                    10, 30, headerPaint);
+
+                // Заголовки дней
+                string[] dayNames = { "ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС" };
+                using var dayPaint = new SKPaint
+                {
+                    Color = SKColors.Black,
+                    IsAntialias = true,
+                    TextSize = 10,
+                    Typeface = SKTypeface.FromFamilyName("Arial", SKFontStyle.Bold),
+                    TextAlign = SKTextAlign.Center
                 };
 
                 for (int i = 0; i < 7; i++)
                 {
                     var dayDate = weekStart.AddDays(i);
-                    var rect = new Rectangle(
-                        leftMargin + (i * cellWidth),
-                        45,
-                        cellWidth,
-                        35);
+                    int x = leftMargin + (i * cellWidth);
+                    int y = 45;
 
-                    graphics.DrawRectangle(Pens.Black, rect);
-                    graphics.DrawString(
+                    // Рамка
+                    using var strokePaint = new SKPaint
+                    {
+                        Style = SKPaintStyle.Stroke,
+                        Color = SKColors.Black,
+                        StrokeWidth = 1
+                    };
+                    var rect = new SKRect(x, y, x + cellWidth, y + 35);
+                    canvas.DrawRect(rect, strokePaint);
+
+                    // Текст
+                    canvas.DrawText(
                         $"{dayNames[i]}\n{dayDate:dd.MM}",
-                        dayFont,
-                        Brushes.Black,
-                        rect,
-                        dayFormat);
+                        x + cellWidth / 2, y + 18,
+                        dayPaint);
                 }
 
-                // Отрисовка данных сотрудников
-                var employeeFont = new Font("Arial", 9);
-                var preferenceFont = new Font("Arial", 8);
-                var nameFormat = new StringFormat
+                // Сотрудники и пожелания
+                using var employeePaint = new SKPaint
                 {
-                    Alignment = StringAlignment.Near,
-                    LineAlignment = StringAlignment.Center
+                    Color = SKColors.Black,
+                    IsAntialias = true,
+                    TextSize = 9,
+                    Typeface = SKTypeface.FromFamilyName("Arial"),
+                    TextAlign = SKTextAlign.Left
+                };
+
+                using var preferencePaint = new SKPaint
+                {
+                    Color = SKColors.Black,
+                    IsAntialias = true,
+                    TextSize = 8,
+                    Typeface = SKTypeface.FromFamilyName("Arial"),
+                    TextAlign = SKTextAlign.Center
+                };
+
+                using var strokePaint2 = new SKPaint
+                {
+                    Style = SKPaintStyle.Stroke,
+                    Color = SKColors.Black,
+                    StrokeWidth = 1
                 };
 
                 for (int empIndex = 0; empIndex < employees.Count; empIndex++)
@@ -106,66 +134,70 @@ namespace ScheduleBot.Services
                     var employee = employees[empIndex];
                     int yPos = 80 + (empIndex * cellHeight);
 
-                    // Ячейка с именем сотрудника
-                    var nameRect = new Rectangle(0, yPos, leftMargin - 10, cellHeight);
-                    graphics.DrawRectangle(Pens.Black, nameRect);
+                    // Имя сотрудника
+                    var nameRect = new SKRect(0, yPos, leftMargin - 10, yPos + cellHeight);
+                    canvas.DrawRect(nameRect, strokePaint2);
 
                     string displayName = employee.FullName.Length > 25
                         ? employee.FullName.Substring(0, 22) + "..."
                         : employee.FullName;
 
-                    graphics.DrawString(
-                        displayName,
-                        employeeFont,
-                        Brushes.Black,
-                        new RectangleF(nameRect.X + 5, nameRect.Y, nameRect.Width - 10, nameRect.Height),
-                        nameFormat);
+                    canvas.DrawText(displayName, 5, yPos + cellHeight / 2 + 3, employeePaint);
 
-                    // Ячейки с пожеланиями по дням
+                    // Пожелания по дням
                     for (int day = 0; day < 7; day++)
                     {
-                        DayOfWeek currentDay = (DayOfWeek)((day + 1) % 7); // Преобразование в DayOfWeek
+                        DayOfWeek currentDay = (DayOfWeek)((day + 1) % 7);
                         var preference = preferences.FirstOrDefault(p =>
                             p.EmployeeId == employee.Id && p.Day == currentDay);
 
-                        var cellRect = new Rectangle(
-                            leftMargin + (day * cellWidth),
-                            yPos,
-                            cellWidth,
-                            cellHeight);
+                        int x = leftMargin + (day * cellWidth);
+                        var cellRect = new SKRect(x, yPos, x + cellWidth, yPos + cellHeight);
 
-                        graphics.DrawRectangle(Pens.Black, cellRect);
+                        // Рамка
+                        canvas.DrawRect(cellRect, strokePaint2);
 
                         var (displayText, bgColor) = GetPreferenceDisplay(preference?.PreferenceText);
 
                         // Заливка цветом
-                        using (var brush = new SolidBrush(bgColor))
+                        using var bgPaint = new SKPaint
                         {
-                            graphics.FillRectangle(brush, cellRect);
-                        }
+                            Style = SKPaintStyle.Fill,
+                            Color = bgColor
+                        };
+                        canvas.DrawRect(cellRect, bgPaint);
 
                         // Текст пожелания
-                        var textFormat = new StringFormat
+                        if (!string.IsNullOrEmpty(displayText) && displayText != "❓")
                         {
-                            Alignment = StringAlignment.Center,
-                            LineAlignment = StringAlignment.Center
-                        };
-
-                        graphics.DrawString(
-                            displayText,
-                            preferenceFont,
-                            Brushes.Black,
-                            cellRect,
-                            textFormat);
+                            canvas.DrawText(
+                                displayText,
+                                x + cellWidth / 2, yPos + cellHeight / 2 + 3,
+                                preferencePaint);
+                        }
+                        else
+                        {
+                            // Для эмодзи используем чуть больший размер
+                            using var emojiPaint = new SKPaint
+                            {
+                                Color = SKColors.Black,
+                                IsAntialias = true,
+                                TextSize = 12,
+                                TextAlign = SKTextAlign.Center
+                            };
+                            canvas.DrawText("❓", x + cellWidth / 2, yPos + cellHeight / 2 + 4, emojiPaint);
+                        }
                     }
                 }
 
-                // Легенда внизу
-                DrawLegend(graphics, 10, height - 40);
+                // Легенда
+                DrawLegend(canvas, 10, height - 40);
 
                 // Сохранение в поток
+                using var image = SKImage.FromBitmap(bitmap);
+                using var data = image.Encode(SKEncodedImageFormat.Png, 100);
                 var stream = new MemoryStream();
-                bitmap.Save(stream, ImageFormat.Png);
+                data.SaveTo(stream);
                 stream.Position = 0;
                 return stream;
             }
@@ -178,45 +210,69 @@ namespace ScheduleBot.Services
 
         private Stream CreateSimpleImage(string message)
         {
-            using var bitmap = new Bitmap(600, 200);
-            using var graphics = Graphics.FromImage(bitmap);
-            graphics.Clear(Color.White);
-            graphics.DrawString(message, new Font("Arial", 12), Brushes.Red, 20, 50);
+            try
+            {
+                using var bitmap = new SKBitmap(600, 200);
+                using var canvas = new SKCanvas(bitmap);
+                canvas.Clear(SKColors.White);
 
-            var stream = new MemoryStream();
-            bitmap.Save(stream, ImageFormat.Png);
-            stream.Position = 0;
-            return stream;
+                using var paint = new SKPaint
+                {
+                    Color = SKColors.Red,
+                    IsAntialias = true,
+                    TextSize = 12,
+                    Typeface = SKTypeface.FromFamilyName("Arial")
+                };
+
+                canvas.DrawText(message, 20, 50, paint);
+
+                using var image = SKImage.FromBitmap(bitmap);
+                using var data = image.Encode(SKEncodedImageFormat.Png, 100);
+                var stream = new MemoryStream();
+                data.SaveTo(stream);
+                stream.Position = 0;
+                return stream;
+            }
+            catch
+            {
+                return new MemoryStream();
+            }
         }
 
-        private (string text, Color color) GetPreferenceDisplay(string? preferenceText)
+        private (string text, SKColor color) GetPreferenceDisplay(string? preferenceText)
         {
             if (string.IsNullOrWhiteSpace(preferenceText))
-                return ("❓", Color.White);
+                return ("", SKColors.White);
 
             string lowerText = preferenceText.ToLower().Trim();
 
             if (lowerText == "любое время" || lowerText == "любое")
-                return ("✅ Любое", Color.FromArgb(200, 255, 200));
+                return ("✅", new SKColor(200, 255, 200));
 
             if (lowerText == "выходной")
-                return ("❌ Выходной", Color.FromArgb(255, 200, 200));
+                return ("❌", new SKColor(255, 200, 200));
 
-            // Сокращаем длинный текст
-            string displayText = preferenceText.Length > 15
-                ? preferenceText.Substring(0, 12) + ".."
+            string displayText = preferenceText.Length > 10
+                ? preferenceText.Substring(0, 8) + ".."
                 : preferenceText;
 
-            return (displayText, Color.FromArgb(200, 200, 255));
+            return (displayText, new SKColor(200, 200, 255));
         }
 
-        private void DrawLegend(Graphics graphics, int x, int y)
+        private void DrawLegend(SKCanvas canvas, int x, int y)
         {
-            var legendFont = new Font("Arial", 8);
-            graphics.DrawString("✅ Любое время", legendFont, Brushes.Black, x, y);
-            graphics.DrawString("❌ Выходной", legendFont, Brushes.Black, x + 120, y);
-            graphics.DrawString("❓ Не указано", legendFont, Brushes.Black, x + 220, y);
-            graphics.DrawString("🔵 Указано время", legendFont, Brushes.Black, x + 320, y);
+            using var paint = new SKPaint
+            {
+                Color = SKColors.Black,
+                IsAntialias = true,
+                TextSize = 8,
+                Typeface = SKTypeface.FromFamilyName("Arial")
+            };
+
+            canvas.DrawText("✅ Любое", x, y, paint);
+            canvas.DrawText("❌ Выходной", x + 100, y, paint);
+            canvas.DrawText("❓ Не указано", x + 200, y, paint);
+            canvas.DrawText("🔵 Время", x + 300, y, paint);
         }
     }
 }
